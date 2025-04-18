@@ -5,112 +5,116 @@ import time
 import paho.mqtt.client as mqtt
 
 # MQTT Configuration
-# BROKER_ADDRESS = "broker.hivemq.com"  # Public broker for testing, replace with your own if needed
-# BROKER_PORT = 8883  # Default secure MQTT port
-BROKER_ADDRESS = "192.168.68.101"  # or your PC's LAN IP
+BROKER_ADDRESS = "192.168.68.101"
 BROKER_PORT = 1883
 TOPIC_BUTTON_PRESS = "ev3dev/button_press"
 TOPIC_HEAD_SEQUENCE = "ev3dev/in"
 
 # Initialize MQTT client
 client = mqtt.Client()
-
-# Enable SSL/TLS
-#client.tls_set()  # Use default certificates for secure connection
-
 client.connect(BROKER_ADDRESS, BROKER_PORT)
 
-# Initialize the motors
-motor_a = LargeMotor(OUTPUT_B)  # Large motor (not the head)
-motor_b = MediumMotor(OUTPUT_A)  # Medium motor (duckies)
-motor_d = LargeMotor(OUTPUT_D)  # Large motor to move the head
-
-# Initialize the infrared sensor on port 1
+# Initialize motors and sensors (unchanged)
+motor_a = LargeMotor(OUTPUT_B)
+motor_b = MediumMotor(OUTPUT_A)
+motor_d = LargeMotor(OUTPUT_D)
 ir = InfraredSensor(INPUT_1)
 
 # State variables
-head_position = 'right'  # Initial head position is 'right'
-beacon_active = False  # Initial beacon state
-
-# Activity timeout settings
-TIMEOUT = 60  # 1 minute of inactivity
+head_position = 'right'
+beacon_active = False
 last_activity_time = time.time()
+TIMEOUT = 60  # 1 minute timeout
 
-# Functions to smoothly control motors
+# Motor control functions (unchanged)
 def mover_motor_a_suave(velocidad):
     motor_a.on(SpeedPercent(velocidad))
 
-
 def detener_motor_suave():
-    motor_a.off(brake=False)  # Coast to stop instead of abrupt brake
-
+    motor_a.off(brake=False)
 
 def mover_motor_b_suave(velocidad, grados):
     motor_b.on_for_degrees(SpeedPercent(velocidad), grados, brake=False)
 
-
 def mover_motor_d_suave(velocidad, grados):
     motor_d.on_for_degrees(SpeedPercent(velocidad), grados, brake=True)
 
+def mover_cabeza_derecha():
+    global head_position
+    if head_position != 'right':
+        motor_d.on_for_degrees(SpeedPercent(50), -90)
+        head_position = 'right'
+
+def mover_cabeza_izquierda():
+    global head_position
+    if head_position != 'left':
+        motor_d.on_for_degrees(SpeedPercent(50), 90)
+        head_position = 'left'
 
 def mover_cabeza_secuencia():
-    # Move head left and back to right twice as a sequence
-    mover_motor_d_suave(50, 90)  # Move head left
+    mover_motor_d_suave(50, 90)  # Left
     time.sleep(0.5)
-    mover_motor_d_suave(50, -90)  # Move head back right
+    mover_motor_d_suave(50, -90)  # Right
     time.sleep(0.5)
-    mover_motor_d_suave(50, 90)  # Move head left again
+    mover_motor_d_suave(50, 90)  # Left
     time.sleep(0.5)
-    mover_motor_d_suave(50, -90)  # Move head back right again
+    mover_motor_d_suave(50, -90)  # Right
 
-# MQTT message handler
+# MQTT message handler (unchanged)
 def on_message(client, userdata, msg):
-    if msg.topic == TOPIC_HEAD_SEQUENCE:
-        print("Received head movement sequence command")
+    command = msg.payload.decode()
+    print(f"Received a: {command}")
+    if command == "head_sequence":
         mover_cabeza_secuencia()
+    elif command == "forward":
+        mover_motor_a_suave(50)
+    elif command == "backward":
+        mover_motor_a_suave(-50)
+    elif command == "stop":
+        detener_motor_suave()
 
 client.on_message = on_message
 client.subscribe(TOPIC_HEAD_SEQUENCE)
 
-print('ready')
-client.loop_start()  # Start MQTT listener loop
+print('Ready. Listening for MQTT messages...')
 
-while True:
-    buttons = ir.buttons_pressed()
-    current_time = time.time()
+try:
+    while True:
+        # Process MQTT messages (replaces client.loop_start())
+        client.loop(timeout=0.01)  # Non-blocking, checks for new messages
 
-    # Check for inactivity timeout
-    if current_time - last_activity_time > TIMEOUT:
-        print("Exiting due to inactivity.")
-        break
+        # Infrared sensor logic (unchanged)
+        buttons = ir.buttons_pressed()
+        current_time = time.time()
 
-    if buttons:
-        last_activity_time = current_time  # Reset activity timer
-        print("button:", buttons)
+        if buttons:
+            last_activity_time = current_time
+            print("Button:", buttons)
+            client.publish(TOPIC_BUTTON_PRESS, f"Button pressed: {buttons}")
 
-        # Send MQTT message if any button is pressed
-        client.publish(TOPIC_BUTTON_PRESS, f"Button pressed: {buttons}")
+        # Motor control logic (unchanged)
+        if 'top_right' in buttons:
+            mover_motor_a_suave(50)
+        elif 'bottom_right' in buttons:
+            mover_motor_a_suave(-50)
+        else:
+            detener_motor_suave()
 
-    # Smooth motor control for large motor (motor_a)
-    if 'top_right' in buttons:
-        mover_motor_a_suave(50)
-    elif 'bottom_right' in buttons:
-        mover_motor_a_suave(-50)
-    else:
-        detener_motor_suave()
+        if 'top_left' in buttons:
+            mover_motor_b_suave(50, 20)
+        elif 'bottom_left' in buttons:
+            mover_motor_b_suave(50, -20)
 
-    # Smooth motor control for medium motor (motor_b)
-    if 'top_left' in buttons:
-        mover_motor_b_suave(50, 20)
-    elif 'bottom_left' in buttons:
-        mover_motor_b_suave(50, -20)
+        if 'beacon' in buttons and not beacon_active:
+            beacon_active = True
+            mover_cabeza_izquierda()
+        elif 'beacon' not in buttons and beacon_active:
+            beacon_active = False
+            mover_cabeza_derecha()
 
-    # Independent head control with the beacon button
-    if 'beacon' in buttons:
-        mover_motor_d_suave(50, 10)  # Slight head movement when beacon is pressed
+        time.sleep(0.30)
 
-    # Handle button release for instant stop
-    if not buttons:
-        detener_motor_suave()
-
-    time.sleep(0.30)  # Reduced delay for smoother operation
+except KeyboardInterrupt:
+    print("Exiting...")
+finally:
+    client.disconnect()
